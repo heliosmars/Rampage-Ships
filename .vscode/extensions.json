@@ -1,0 +1,12 @@
+{
+  "recommendations": [
+    "eamodio.gitlens",
+    "mhutchie.git-graph",
+    "esbenp.prettier-vscode",
+    "dbaeumer.vscode-eslint",
+    "cesium.gltf-vscode",
+    "slevesque.shader",
+    "christian-kohler.path-intellisense",
+    "pkief.material-icon-theme"
+  ]
+}
