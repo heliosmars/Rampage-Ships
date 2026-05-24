@@ -34,6 +34,8 @@ function createHexMesh(color) {
 
 function buildGrid(scene) {
   const tiles = [];
+  const tileMap = {};
+
   for (let q = -GRID_RADIUS; q <= GRID_RADIUS; q++) {
     for (let r = -GRID_RADIUS; r <= GRID_RADIUS; r++) {
       if (Math.abs(q + r) > GRID_RADIUS) continue;
@@ -44,9 +46,28 @@ function buildGrid(scene) {
       hex.userData = { q, r, baseY: 0 };
       scene.add(hex);
       tiles.push(hex);
+      tileMap[`${q},${r}`] = hex;
     }
   }
-  return tiles;
+  return { tiles, tileMap };
+}
+
+function getNeighbors(q, r, radius = 2) {
+  const dirs = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+    [1, -1],
+    [-1, 1],
+  ];
+  const result = [];
+  for (let step = 1; step <= radius; step++) {
+    dirs.forEach(([dq, dr]) => {
+      result.push({ q: q + dq * step, r: r + dr * step });
+    });
+  }
+  return result;
 }
 
 export function initScene() {
@@ -77,7 +98,7 @@ export function initScene() {
   sun.position.set(10, 20, 10);
   scene.add(sun);
 
-  const tiles = buildGrid(scene);
+  const { tiles, tileMap } = buildGrid(scene);
 
   // Barco placeholder en el centro
   const ship = createShip(scene);
@@ -94,16 +115,63 @@ export function initScene() {
 
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
+  let highlighted = [];
+
+  function clearHighlights() {
+    highlighted.forEach((t) => {
+      t.children[0].material.color.set(0x1a6fa8);
+    });
+    highlighted = [];
+  }
+
+  function highlightMoves(q, r) {
+    clearHighlights();
+    const neighbors = getNeighbors(q, r, 2);
+    neighbors.forEach(({ q: nq, r: nr }) => {
+      const tile = tileMap[`${nq},${nr}`];
+      if (tile) {
+        tile.children[0].material.color.set(0x27ae60);
+        highlighted.push(tile);
+      }
+    });
+  }
 
   window.addEventListener("click", (e) => {
     mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
     mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
     raycaster.setFromCamera(mouse, camera);
 
-    const hits = raycaster.intersectObjects(ship.children, true);
-    if (hits.length > 0) {
+    // Click en barco
+    const shipHits = raycaster.intersectObjects(ship.children, true);
+    if (shipHits.length > 0) {
       ship.userData.selected = !ship.userData.selected;
       ship.userData.ring.material.opacity = ship.userData.selected ? 0.8 : 0;
+      if (ship.userData.selected) {
+        highlightMoves(ship.userData.q, ship.userData.r);
+      } else {
+        clearHighlights();
+      }
+      return;
+    }
+
+    // Click en tile resaltado — mover barco
+    if (ship.userData.selected) {
+      const tileHits = raycaster.intersectObjects(
+        highlighted.map((t) => t.children[0]),
+        true,
+      );
+      if (tileHits.length > 0) {
+        const tile = tileHits[0].object.parent;
+        const { q, r } = tile.userData;
+        const { x, z } = hexToWorld(q, r);
+        ship.userData.q = q;
+        ship.userData.r = r;
+        ship.position.x = x;
+        ship.position.z = z;
+        ship.userData.selected = false;
+        ship.userData.ring.material.opacity = 0;
+        clearHighlights();
+      }
     }
   });
 
