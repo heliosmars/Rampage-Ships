@@ -40,7 +40,7 @@ function buildGrid(scene) {
       const hex = createHexMesh(0x1a6fa8);
       hex.rotation.x = -Math.PI / 2;
       hex.position.set(x, 0.01, z);
-      hex.userData = { q, r };
+      hex.userData = { q, r, baseY: 0 };
       scene.add(hex);
       tiles.push(hex);
     }
@@ -76,7 +76,7 @@ export function initScene() {
   sun.position.set(10, 20, 10);
   scene.add(sun);
 
-  buildGrid(scene);
+  const tiles = buildGrid(scene);
 
   // Barco placeholder en el centro
   const shipGeo = new THREE.BoxGeometry(0.6, 0.4, 1.2);
@@ -93,8 +93,18 @@ export function initScene() {
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
+  const clock = new THREE.Clock();
+
   function animate() {
     requestAnimationFrame(animate);
+    const t = clock.getElapsedTime();
+
+    tiles.forEach((tile) => {
+      const { q, r } = tile.userData;
+      const wave = Math.sin(t * 1.5 + q * 0.8 + r * 0.8) * 0.08;
+      tile.position.y = wave;
+    });
+
     renderer.render(scene, camera);
   }
   animate();
