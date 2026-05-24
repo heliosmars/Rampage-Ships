@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { createShip } from "./ship.js";
 
 const HEX_SIZE = 1;
 const GRID_RADIUS = 5;
@@ -79,11 +80,7 @@ export function initScene() {
   const tiles = buildGrid(scene);
 
   // Barco placeholder en el centro
-  const shipGeo = new THREE.BoxGeometry(0.6, 0.4, 1.2);
-  const shipMat = new THREE.MeshStandardMaterial({ color: 0xe8e8e8 });
-  const ship = new THREE.Mesh(shipGeo, shipMat);
-  ship.position.set(0, 0.2, 0);
-  scene.add(ship);
+  const ship = createShip(scene);
 
   window.addEventListener("resize", () => {
     const a = window.innerWidth / window.innerHeight;
@@ -95,6 +92,21 @@ export function initScene() {
 
   const clock = new THREE.Clock();
 
+  const raycaster = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+
+  window.addEventListener("click", (e) => {
+    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+
+    const hits = raycaster.intersectObjects(ship.children, true);
+    if (hits.length > 0) {
+      ship.userData.selected = !ship.userData.selected;
+      ship.userData.ring.material.opacity = ship.userData.selected ? 0.8 : 0;
+    }
+  });
+
   function animate() {
     requestAnimationFrame(animate);
     const t = clock.getElapsedTime();
@@ -104,6 +116,12 @@ export function initScene() {
       const wave = Math.sin(t * 1.5 + q * 0.8 + r * 0.8) * 0.08;
       tile.position.y = wave;
     });
+
+    // Barco flota con la ola del tile central
+    const wave = Math.sin(t * 1.5) * 0.08;
+    ship.position.y = 0.2 + wave;
+    ship.rotation.z = Math.sin(t * 1.5) * 0.03;
+    ship.rotation.x = Math.sin(t * 1.2) * 0.02;
 
     renderer.render(scene, camera);
   }
