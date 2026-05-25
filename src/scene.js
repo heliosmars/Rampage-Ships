@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { createShip } from "./ship.js";
+import { fireProjectile } from "./projectile.js";
 
 const HEX_SIZE = 1;
 const GRID_RADIUS = 5;
@@ -112,7 +113,7 @@ export function initScene() {
   });
 
   const clock = new THREE.Clock();
-
+  const projectiles = [];
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
   let highlighted = [];
@@ -175,21 +176,53 @@ export function initScene() {
     }
   });
 
+  window.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+
+    const allTiles = tiles.map((t) => t.children[0]);
+    const hits = raycaster.intersectObjects(allTiles, true);
+    if (hits.length > 0) {
+      const from = {
+        x: ship.position.x,
+        y: ship.position.y + 0.3,
+        z: ship.position.z,
+      };
+      const to = {
+        x: hits[0].point.x,
+        y: 0.2,
+        z: hits[0].point.z,
+      };
+      const updater = fireProjectile(scene, from, to, (pos) => {
+        console.log("impacto en", pos);
+      });
+      projectiles.push(updater);
+    }
+  });
+  let totalTime = 0;
   function animate() {
     requestAnimationFrame(animate);
-    const t = clock.getElapsedTime();
+    const dt = clock.getDelta();
+    totalTime += dt;
 
     tiles.forEach((tile) => {
       const { q, r } = tile.userData;
-      const wave = Math.sin(t * 1.5 + q * 0.8 + r * 0.8) * 0.08;
+      const wave = Math.sin(totalTime * 1.5 + q * 0.8 + r * 0.8) * 0.08;
       tile.position.y = wave;
     });
 
     // Barco flota con la ola del tile central
-    const wave = Math.sin(t * 1.5) * 0.08;
+    const wave = Math.sin(totalTime * 1.5) * 0.08;
     ship.position.y = 0.2 + wave;
-    ship.rotation.z = Math.sin(t * 1.5) * 0.03;
-    ship.rotation.x = Math.sin(t * 1.2) * 0.02;
+    ship.rotation.z = Math.sin(totalTime * 1.5) * 0.03;
+    ship.rotation.x = Math.sin(totalTime * 1.2) * 0.02;
+
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+      const alive = projectiles[i](dt);
+      if (!alive) projectiles.splice(i, 1);
+    }
 
     renderer.render(scene, camera);
   }
