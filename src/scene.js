@@ -3,6 +3,8 @@ import { createShip } from "./ship.js";
 import { fireProjectile } from "./projectile.js";
 import { createTrajectory } from "./trajectory.js";
 import { createExplosion } from "./explosion.js";
+import { createTurnSystem } from "./turns.js";
+import { createHUD } from "./hud.js";
 
 const HEX_SIZE = 1;
 const GRID_RADIUS = 5;
@@ -104,9 +106,27 @@ export function initScene() {
   const { tiles, tileMap } = buildGrid(scene);
 
   // Barco placeholder en el centro
-  const ship = createShip(scene, 0, 0, () => {
+  const hud = createHUD();
+
+  const ship1 = createShip(scene, 0, 0, () => {
     trajectory.hide();
   });
+  const ship2 = createShip(scene, 3, -3, () => {
+    trajectory.hide();
+  });
+  ship2.children[0].material.color.set(0x8b0000); // casco rojo para jugador 2
+  ship2.children[1].material.color.set(0x6b0000);
+
+  const { x: x2, z: z2 } = hexToWorld(3, -3);
+  ship2.position.set(x2, 0.2, z2);
+
+  const turns = createTurnSystem([ship1, ship2], (idx, actions) => {
+    hud.update(idx, actions);
+  });
+
+  hud.update(0, turns.getActions());
+
+  const ship = ship1; // mantener compatibilidad con código existente);
 
   window.addEventListener("resize", () => {
     const a = window.innerWidth / window.innerHeight;
@@ -145,18 +165,22 @@ export function initScene() {
   }
 
   window.addEventListener("click", (e) => {
-    if (!ship.parent) return; // barco muerto
+    const active = turns.currentShip();
+    if (!active.parent) return;
+
     mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
     mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
     raycaster.setFromCamera(mouse, camera);
 
     // Click en barco
-    const shipHits = raycaster.intersectObjects(ship.children, true);
+    const shipHits = raycaster.intersectObjects(active.children, true);
     if (shipHits.length > 0) {
-      ship.userData.selected = !ship.userData.selected;
-      ship.userData.ring.material.opacity = ship.userData.selected ? 0.8 : 0;
-      if (ship.userData.selected) {
-        highlightMoves(ship.userData.q, ship.userData.r);
+      active.userData.selected = !active.userData.selected;
+      active.userData.ring.material.opacity = active.userData.selected
+        ? 0.8
+        : 0;
+      if (active.userData.selected) {
+        highlightMoves(active.userData.q, active.userData.r);
       } else {
         clearHighlights();
       }
@@ -164,7 +188,7 @@ export function initScene() {
     }
 
     // Click en tile resaltado — mover barco
-    if (ship.userData.selected) {
+    if (active.userData.selected && turns.getActions().move > 0) {
       const tileHits = raycaster.intersectObjects(
         highlighted.map((t) => t.children[0]),
         true,
@@ -173,20 +197,25 @@ export function initScene() {
         const tile = tileHits[0].object.parent;
         const { q, r } = tile.userData;
         const { x, z } = hexToWorld(q, r);
-        ship.userData.q = q;
-        ship.userData.r = r;
-        ship.position.x = x;
-        ship.position.z = z;
-        ship.userData.selected = false;
-        ship.userData.ring.material.opacity = 0;
+        active.userData.q = q;
+        active.userData.r = r;
+        active.position.x = x;
+        active.position.z = z;
+        active.userData.selected = false;
+        active.userData.ring.material.opacity = 0;
         clearHighlights();
+        turns.useAction("move");
+        hud.update(turns.currentShip() === ship1 ? 0 : 1, turns.getActions());
       }
     }
   });
 
   window.addEventListener("contextmenu", (e) => {
-    if (!ship.parent) return // barco muerto
     e.preventDefault();
+    const active = turns.currentShip();
+    if (!active.parent) return; // barco muerto
+    if (turns.getActions().shoot <= 0) return;
+
     mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
     mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
     raycaster.setFromCamera(mouse, camera);
@@ -195,9 +224,9 @@ export function initScene() {
     const hits = raycaster.intersectObjects(allTiles, true);
     if (hits.length > 0) {
       const from = {
-        x: ship.position.x,
-        y: ship.position.y + 0.3,
-        z: ship.position.z,
+        x: active.position.x,
+        y: active.position.y + 0.3,
+        z: active.position.z,
       };
       const to = {
         x: hits[0].point.x,
@@ -205,23 +234,29 @@ export function initScene() {
         z: hits[0].point.z,
       };
       const updater = fireProjectile(scene, from, to, (pos) => {
+        // Daño al barco enemigo
+        const enemy = active === ship1 ? ship2 : ship1;
         // Detectar si impactó cerca del barco enemigo
-        const dx = pos.x - ship.position.x;
-        const dz = pos.z - ship.position.z;
+        const dx = pos.x - enemy.position.x;
+        const dz = pos.z - enemy.position.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
-        if (dist < 1.2) {
-          ship.userData.takeDamage(3);
+        if (Math.sqrt(dx * dx + dz * dz) < 1.2) {
+          enemy.userData.takeDamage(3);
         }
         const exp = createExplosion(scene, pos);
         explosions.push(exp);
       });
       projectiles.push(updater);
       trajectory.hide();
+      turns.useAction("shoot");
+      hud.update(turns.currentShip() === ship1 ? 0 : 1, turns.getActions());
     }
   });
 
   window.addEventListener("mousemove", (e) => {
-    if (!ship.parent) {
+    const active = turns.currentShip();
+
+    if (!active.parent) {
       trajectory.hide();
       return;
     }
@@ -233,9 +268,9 @@ export function initScene() {
     const hits = raycaster.intersectObjects(allTiles, true);
     if (hits.length > 0) {
       const from = {
-        x: ship.position.x,
-        y: ship.position.y + 0.3,
-        z: ship.position.z,
+        x: active.position.x,
+        y: active.position.y + 0.3,
+        z: active.position.z,
       };
       const to = {
         x: hits[0].point.x,
