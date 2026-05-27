@@ -104,7 +104,9 @@ export function initScene() {
   const { tiles, tileMap } = buildGrid(scene);
 
   // Barco placeholder en el centro
-  const ship = createShip(scene);
+  const ship = createShip(scene, 0, 0, () => {
+    trajectory.hide();
+  });
 
   window.addEventListener("resize", () => {
     const a = window.innerWidth / window.innerHeight;
@@ -143,6 +145,7 @@ export function initScene() {
   }
 
   window.addEventListener("click", (e) => {
+    if (!ship.parent) return; // barco muerto
     mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
     mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
     raycaster.setFromCamera(mouse, camera);
@@ -182,6 +185,7 @@ export function initScene() {
   });
 
   window.addEventListener("contextmenu", (e) => {
+    if (!ship.parent) return // barco muerto
     e.preventDefault();
     mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
     mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
@@ -201,6 +205,13 @@ export function initScene() {
         z: hits[0].point.z,
       };
       const updater = fireProjectile(scene, from, to, (pos) => {
+        // Detectar si impactó cerca del barco enemigo
+        const dx = pos.x - ship.position.x;
+        const dz = pos.z - ship.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < 1.2) {
+          ship.userData.takeDamage(3);
+        }
         const exp = createExplosion(scene, pos);
         explosions.push(exp);
       });
@@ -210,6 +221,10 @@ export function initScene() {
   });
 
   window.addEventListener("mousemove", (e) => {
+    if (!ship.parent) {
+      trajectory.hide();
+      return;
+    }
     mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
     mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
     raycaster.setFromCamera(mouse, camera);
