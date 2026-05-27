@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { createShip } from "./ship.js";
 import { fireProjectile } from "./projectile.js";
 import { createTrajectory } from "./trajectory.js";
+import { createExplosion } from "./explosion.js";
 
 const HEX_SIZE = 1;
 const GRID_RADIUS = 5;
@@ -116,6 +117,7 @@ export function initScene() {
   const clock = new THREE.Clock();
   const projectiles = [];
   const trajectory = createTrajectory(scene);
+  const explosions = [];
 
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
@@ -199,7 +201,8 @@ export function initScene() {
         z: hits[0].point.z,
       };
       const updater = fireProjectile(scene, from, to, (pos) => {
-        console.log("impacto en", pos);
+        const exp = createExplosion(scene, pos);
+        explosions.push(exp);
       });
       projectiles.push(updater);
       trajectory.hide();
@@ -251,6 +254,10 @@ export function initScene() {
     for (let i = projectiles.length - 1; i >= 0; i--) {
       const alive = projectiles[i](dt);
       if (!alive) projectiles.splice(i, 1);
+    }
+    for (let i = explosions.length - 1; i >= 0; i--) {
+      const alive = explosions[i](dt);
+      if (!alive) explosions.splice(i, 1);
     }
 
     renderer.render(scene, camera);
