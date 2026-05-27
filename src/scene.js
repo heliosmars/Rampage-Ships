@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { createShip } from "./ship.js";
 import { fireProjectile } from "./projectile.js";
+import { createTrajectory } from "./trajectory.js";
 
 const HEX_SIZE = 1;
 const GRID_RADIUS = 5;
@@ -114,6 +115,8 @@ export function initScene() {
 
   const clock = new THREE.Clock();
   const projectiles = [];
+  const trajectory = createTrajectory(scene);
+
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
   let highlighted = [];
@@ -199,8 +202,34 @@ export function initScene() {
         console.log("impacto en", pos);
       });
       projectiles.push(updater);
+      trajectory.hide();
     }
   });
+
+  window.addEventListener("mousemove", (e) => {
+    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+
+    const allTiles = tiles.map((t) => t.children[0]);
+    const hits = raycaster.intersectObjects(allTiles, true);
+    if (hits.length > 0) {
+      const from = {
+        x: ship.position.x,
+        y: ship.position.y + 0.3,
+        z: ship.position.z,
+      };
+      const to = {
+        x: hits[0].point.x,
+        y: 0.2,
+        z: hits[0].point.z,
+      };
+      trajectory.update(from, to);
+    } else {
+      trajectory.hide();
+    }
+  });
+
   let totalTime = 0;
   function animate() {
     requestAnimationFrame(animate);
