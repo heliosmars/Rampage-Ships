@@ -1,3 +1,5 @@
+import * as THREE from 'three'
+import { hexToWorld } from './grid.js'
 // damage.js — Resolución de impactos por celda hexagonal
 // Recibe la celda impactada, identifica qué sección del barco ocupa esa celda,
 // y aplica el daño correspondiente.
@@ -92,33 +94,29 @@ export function resolveImpact(impactPos, enemyShips, damage) {
  * Úsala mientras scene.js no usa coordenadas hex para el impacto.
  * Se puede eliminar en J12 cuando se migre el sistema de disparo.
  */
-export function resolveImpactByDistance(impactPos, enemyShips, damage, threshold = 1.2) {
+export function resolveImpactByDistance(impactPos, enemyShips, damage) {
+  const SECTION_RADIUS = 1.0  // radio de impacto por sección individual
+
   for (const ship of enemyShips) {
     if (!ship.parent) continue
 
-    const dx = impactPos.x - ship.position.x
-    const dz = impactPos.z - ship.position.z
-    const dist = Math.sqrt(dx * dx + dz * dz)
+    const sections = ship.userData.sections
+    let closestIdx  = -1
+    let closestDist = Infinity
 
-    if (dist < threshold) {
-      // Estimar sección más cercana al punto de impacto
-      const sections = ship.userData.sections
-      let closestIdx = 0
-      let closestDist = Infinity
+    sections.forEach((sec, i) => {
+      if (sec.destroyed) return
+      const { x: sx, z: sz } = sectionWorldPos(ship, sec)
+      const d = Math.sqrt((impactPos.x - sx) ** 2 + (impactPos.z - sz) ** 2)
+      if (d < closestDist) {
+        closestDist = d
+        closestIdx  = i
+      }
+    })
 
-      sections.forEach((sec, i) => {
-        if (sec.destroyed) return
-        const { x: sx, z: sz } = sectionWorldPos(ship, sec)
-        const sd = Math.sqrt((impactPos.x - sx) ** 2 + (impactPos.z - sz) ** 2)
-        if (sd < closestDist) {
-          closestDist = sd
-          closestIdx = i
-        }
-      })
-
-      const result = ship.userData.takeDamageAt(closestIdx, damage)
+    if (closestIdx >= 0 && closestDist < SECTION_RADIUS) {
+      const result  = ship.userData.takeDamageAt(closestIdx, damage)
       const section = sections[closestIdx]
-
       return {
         hit:          true,
         ship,
@@ -136,14 +134,14 @@ export function resolveImpactByDistance(impactPos, enemyShips, damage, threshold
 
 /**
  * Posición mundo del centro de una sección específica de un barco.
+ * Usa matrixWorld para manejar cualquier combinación de rotaciones correctamente.
  */
+const _vec = new THREE.Vector3()
 function sectionWorldPos(ship, section) {
-  const HEX_SIZE = 1
   const { dq, dr } = section.cellOffset
-  const ox = HEX_SIZE * (3 / 2) * dq
-  const oz = HEX_SIZE * (Math.sqrt(3) * dr + (Math.sqrt(3) / 2) * dq)
-  return {
-    x: ship.position.x + ox,
-    z: ship.position.z + oz,
-  }
+  const local = hexToWorld(dq, dr)  // pointy-top coordinates
+  ship.updateMatrixWorld(true)
+  _vec.set(local.x, 0, local.z)
+  _vec.applyMatrix4(ship.matrixWorld)
+  return { x: _vec.x, z: _vec.z }
 }

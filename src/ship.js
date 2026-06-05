@@ -1,6 +1,7 @@
 // ship.js — Barco con secciones funcionales y posición multicelda
 import * as THREE from 'three'
 import { Section, SectionType, SectionEffect } from './section.js'
+import { hexToWorld as hexToWorldGrid } from './grid.js'
 
 // ── Definiciones de tipos de barco ──────────────────────────────────────────
 // Cada tipo define sus secciones en orden proa→popa.
@@ -75,43 +76,58 @@ const SHIP_DEFINITIONS = {
 
 // ── Helpers de geometría ─────────────────────────────────────────────────────
 const HEX_SIZE = 1
-
-function hexToWorld(q, r) {
-  const x = HEX_SIZE * (3 / 2) * q
-  const z = HEX_SIZE * (Math.sqrt(3) * r + (Math.sqrt(3) / 2) * q)
-  return { x, z }
-}
+// Usar hexToWorld pointy-top de grid.js
+const hexToWorld = hexToWorldGrid
 
 // ── Mesh de barra HP por sección ─────────────────────────────────────────────
-function createSectionHpBar(offsetX) {
+// Las barras viven en un grupo EXTERNO al barco para que nunca hereden
+// la rotación del barco. Se posicionan en mundo cada frame desde updateBars().
+// addToScene=false para ghosts — se añaden a la escena solo cuando es barco real.
+function createSectionHpBar(scene, addToScene = true) {
   const group = new THREE.Group()
 
   const bgGeo = new THREE.PlaneGeometry(0.7, 0.1)
-  const bgMat = new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.DoubleSide })
+  const bgMat = new THREE.MeshBasicMaterial({
+    color: 0xcc0000, side: THREE.DoubleSide, depthWrite: false
+  })
   const bg = new THREE.Mesh(bgGeo, bgMat)
   group.add(bg)
 
   const fgGeo = new THREE.PlaneGeometry(0.7, 0.1)
-  const fgMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, side: THREE.DoubleSide })
+  const fgMat = new THREE.MeshBasicMaterial({
+    color: 0x00cc44, side: THREE.DoubleSide, depthWrite: false
+  })
   const fg = new THREE.Mesh(fgGeo, fgMat)
-  fg.position.z = 0.01
+  fg.position.y = 0.001
   group.add(fg)
 
-  group.position.set(offsetX, 1.1, 0)
+  group.rotation.set(-Math.PI / 4, Math.PI / 4, 0)
+
+  if (addToScene) scene.add(group)
 
   function update(pct) {
-    fg.scale.x = Math.max(0, pct)
-    fg.position.x = -(1 - Math.max(0, pct)) * 0.35
-    if (pct > 0.6)      fg.material.color.set(0x00cc44)
-    else if (pct > 0.3) fg.material.color.set(0xffaa00)
-    else                fg.material.color.set(0xff3333)
+    const p = Math.max(0, Math.min(1, pct))
+    fg.scale.x = p
+    fg.position.x = -(1 - p) * 0.35
+    if (p > 0.6)      fg.material.color.set(0x00cc44)
+    else if (p > 0.3) fg.material.color.set(0xffaa00)
+    else              fg.material.color.set(0xff3333)
   }
 
-  return { group, update }
+  function setWorldPos(x, y, z) {
+    group.position.set(x, y, z)
+  }
+
+  function remove() {
+    scene.remove(group)
+  }
+
+  update(1.0)
+  return { group, update, setWorldPos, remove }
 }
 
 // ── createShip ───────────────────────────────────────────────────────────────
-export function createShip(scene, anchorQ = 0, anchorR = 0, shipType = ShipType.DESTROYER, playerColor = null, onDeath = () => {}) {
+export function createShip(scene, anchorQ = 0, anchorR = 0, shipType = ShipType.DESTROYER, playerColor = null, onDeath = () => {}, addToScene = true) {
   const def = SHIP_DEFINITIONS[shipType]
   const group = new THREE.Group()
 
@@ -187,10 +203,8 @@ export function createShip(scene, anchorQ = 0, anchorR = 0, shipType = ShipType.
       group.add(hangar)
     }
 
-    // Barra HP flotante por sección
-    const bar = createSectionHpBar(ox)
-    bar.group.rotation.x = 0 // mira hacia arriba, se rota en animate si hace falta
-    group.add(bar.group)
+    // Barra HP en espacio mundo — no añadir a escena si es ghost
+    const bar = createSectionHpBar(scene, addToScene)
     hpBars.push(bar)
   })
 
@@ -211,7 +225,7 @@ export function createShip(scene, anchorQ = 0, anchorR = 0, shipType = ShipType.
   // ── Posición inicial ──
   const { x: ax, z: az } = hexToWorld(anchorQ, anchorR)
   group.position.set(ax, 0.2, az)
-  scene.add(group)
+  if (addToScene) scene.add(group)
 
   // ── Celdas ocupadas ──
   // anchorQ/R es la celda de la proa; las demás se calculan con los offsets
@@ -247,6 +261,7 @@ export function createShip(scene, anchorQ = 0, anchorR = 0, shipType = ShipType.
           break
         case SectionType.TURRET:
           caps.canFireLateral = true
+          caps.canFire = true   // torreta destruida no apaga el disparo principal
           break
         case SectionType.BRIDGE:
           caps.canFireLateral = true
@@ -345,6 +360,8 @@ export function createShip(scene, anchorQ = 0, anchorR = 0, shipType = ShipType.
 
   function die() {
     onDeath()
+    // Eliminar barras HP del mundo
+    hpBars.forEach(b => b.remove())
     let progress = 0
     const sink = setInterval(() => {
       progress += 0.05
@@ -358,13 +375,67 @@ export function createShip(scene, anchorQ = 0, anchorR = 0, shipType = ShipType.
     }, 50)
   }
 
-  // ── Mover barco a nueva celda ancla ──
-  function moveTo(newQ, newR) {
+  // ── Actualizar posición mundo de las barras HP ──────────────────────────
+  // Llamar cada frame desde el loop de animación.
+  // Usa la matriz mundo del group para transformar el offset local correctamente,
+  // sin importar rotación X/Y/Z aplicada por las olas o el despliegue.
+  const _barVec = new THREE.Vector3()
+
+  function updateBars() {
+    group.updateMatrixWorld(true)
+    sections.forEach((sec, i) => {
+      const { dq, dr } = sec.cellOffset
+      const local = hexToWorld(dq, dr)
+      _barVec.set(local.x, 0.9, local.z)
+      _barVec.applyMatrix4(group.matrixWorld)
+      hpBars[i].setWorldPos(_barVec.x, _barVec.y, _barVec.z)
+      hpBars[i].update(sec.destroyed ? 0 : sec.healthPct())
+    })
+  }
+
+  // ── Mover barco a nueva celda ancla (con animación suave) ──
+  let moveAnim = null  // { targetX, targetZ, startX, startZ, elapsed, duration, onDone }
+
+  function moveTo(newQ, newR, onDone = null) {
     anchorQ = newQ
     anchorR = newR
-    const { x, z } = hexToWorld(anchorQ, anchorR)
-    group.position.x = x
-    group.position.z = z
+    const { x: targetX, z: targetZ } = hexToWorld(newQ, newR)
+
+    // Animación de deslizamiento suave
+    moveAnim = {
+      startX:   group.position.x,
+      startZ:   group.position.z,
+      targetX,
+      targetZ,
+      elapsed:  0,
+      duration: 0.28,   // segundos por movimiento
+      onDone,
+    }
+  }
+
+  // Llamar desde el loop de animación principal
+  function updateMovement(dt) {
+    if (!moveAnim) return false
+    moveAnim.elapsed += dt
+    const t = Math.min(moveAnim.elapsed / moveAnim.duration, 1)
+    // Ease out cúbico
+    const ease = 1 - Math.pow(1 - t, 3)
+    group.position.x = moveAnim.startX + (moveAnim.targetX - moveAnim.startX) * ease
+    group.position.z = moveAnim.startZ + (moveAnim.targetZ - moveAnim.startZ) * ease
+
+    if (t >= 1) {
+      group.position.x = moveAnim.targetX
+      group.position.z = moveAnim.targetZ
+      const cb = moveAnim.onDone
+      moveAnim = null
+      if (cb) cb()
+      return false  // animación terminada
+    }
+    return true  // animación en curso
+  }
+
+  function isMoving() {
+    return moveAnim !== null
   }
 
   // ── userData para compatibilidad con scene.js ──
@@ -372,6 +443,7 @@ export function createShip(scene, anchorQ = 0, anchorR = 0, shipType = ShipType.
     q: anchorQ,
     r: anchorR,
     shipType,
+    speedBase: def.speedBase,   // ← expuesto para que scene.js calcule el rango de movimiento
     selected: false,
     ring,
     sections,
@@ -379,6 +451,10 @@ export function createShip(scene, anchorQ = 0, anchorR = 0, shipType = ShipType.
     getOccupiedCells,
     takeDamageAt,
     moveTo,
+    updateMovement,
+    isMoving,
+    updateBars,
+    _hpBars: hpBars,   // referencia directa para cleanup externo (deployment)
     // Compatibilidad con el sistema de daño antiguo (distancia euclidiana)
     // Acepta daño en la sección más cercana al punto de impacto
     takeDamage: (amount) => {

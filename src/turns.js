@@ -1,168 +1,129 @@
-// turns.js — Sistema de turnos con pool de movimiento y cargadores de munición
+// turns.js — Sistema de turnos por jugador (no por barco)
 
-// ── Configuración de recursos ────────────────────────────────────────────────
-export const MOVE_POOL_PER_TURN = 8        // Puntos de movimiento por turno (pool compartido)
-export const EVASION_TOKENS_PER_TURN = 2   // Tokens de evasión por turno
+export const MOVE_POOL_PER_TURN    = 8
+export const EVASION_TOKENS_PER_TURN = 2
 
-// Cargas totales por tipo de arma para toda la partida
 export const AMMO_CONFIG = {
-  cannon_light:  { total: 6, damage: 2, label: 'Cañón ligero' },
-  cannon_std:    { total: 4, damage: 3, label: 'Cañón estándar' },
-  cannon_heavy:  { total: 3, damage: 4, label: 'Cañón pesado' },
-  cannon_low:    { total: 4, damage: 2, label: 'Cañón raso' },
-  torpedo:       { total: 2, damage: 5, label: 'Torpedo' },
-  area:          { total: 1, damage: 2, label: 'Área (splash)' },
+  cannon_light: { total: 6, damage: 2, label: 'Cañón ligero' },
+  cannon_std:   { total: 4, damage: 3, label: 'Cañón estándar' },
+  cannon_heavy: { total: 3, damage: 4, label: 'Cañón pesado' },
+  cannon_low:   { total: 4, damage: 2, label: 'Cañón raso' },
+  torpedo:      { total: 2, damage: 5, label: 'Torpedo' },
+  area:         { total: 1, damage: 2, label: 'Área (splash)' },
 }
 
-// ── createTurnSystem ─────────────────────────────────────────────────────────
-export function createTurnSystem(ships, onTurnChange) {
-  let currentIdx = 0
-  let turnNumber  = 1
-
-  // Estado por jugador
-  const playerState = ships.map(() => ({
+function freshState() {
+  return {
     movePool:      MOVE_POOL_PER_TURN,
     evasionTokens: EVASION_TOKENS_PER_TURN,
-    // Cargadores: inicializar con cargas totales para cada tipo de arma
     ammo: Object.fromEntries(
-      Object.entries(AMMO_CONFIG).map(([key, cfg]) => [key, cfg.total])
+      Object.entries(AMMO_CONFIG).map(([k, v]) => [k, v.total])
     ),
-  }))
+  }
+}
 
-  // ── Acceso al estado actual ──────────────────────────────────────────────
+// fleet1, fleet2: arrays de barcos de cada jugador
+export function createTurnSystem(fleet1, fleet2, onTurnChange) {
+  const fleets = [fleet1, fleet2]
+  let currentPlayer = 0
+  let turnNumber    = 1
+
+  // Estado independiente por jugador (munición es por partida, no se resetea)
+  const playerState = [freshState(), freshState()]
+
+  // ── Acceso ────────────────────────────────────────────────────────────────
+  function getCurrentPlayer()  { return currentPlayer }
+  function getCurrentFleet()   { return fleets[currentPlayer] }
+  function getTurnNumber()     { return turnNumber }
+
+  // Compatibilidad: devuelve el primer barco vivo del jugador activo
   function currentShip() {
-    return ships[currentIdx]
+    return fleets[currentPlayer].find(s => s.parent) ?? fleets[currentPlayer][0]
   }
 
-  function getState() {
-    return { ...playerState[currentIdx] }
-  }
-
-  function getTurnNumber() {
-    return turnNumber
-  }
-
-  // ── Movimiento ───────────────────────────────────────────────────────────
-  /**
-   * Intenta gastar `cost` puntos de movimiento del pool actual.
-   * Devuelve true si hay suficientes, false si no.
-   */
+  // ── Movimiento ────────────────────────────────────────────────────────────
   function useMove(cost = 1) {
-    const state = playerState[currentIdx]
-    if (state.movePool < cost) return false
-    state.movePool -= cost
-    _notifyChange()
+    const st = playerState[currentPlayer]
+    if (st.movePool < cost) return false
+    st.movePool -= cost
+    _notify()
     return true
   }
 
   function canMove(cost = 1) {
-    return playerState[currentIdx].movePool >= cost
+    return playerState[currentPlayer].movePool >= cost
   }
 
-  // ── Disparo ──────────────────────────────────────────────────────────────
-  /**
-   * Intenta gastar 1 carga del arma indicada.
-   * @param {string} weaponKey — clave de AMMO_CONFIG
-   */
-  function useAmmo(weaponKey) {
-    const state = playerState[currentIdx]
-    if (state.ammo[weaponKey] === undefined) return false
-    if (state.ammo[weaponKey] <= 0) return false
-    state.ammo[weaponKey]--
-    _notifyChange()
+  // ── Disparo ───────────────────────────────────────────────────────────────
+  function useAmmo(key) {
+    const st = playerState[currentPlayer]
+    if (!st.ammo[key] || st.ammo[key] <= 0) return false
+    st.ammo[key]--
+    _notify()
     return true
   }
 
-  function canFire(weaponKey) {
-    const state = playerState[currentIdx]
-    return (state.ammo[weaponKey] ?? 0) > 0
+  function canFire(key) {
+    return (playerState[currentPlayer].ammo[key] ?? 0) > 0
   }
 
-  function getAmmo(weaponKey) {
-    return playerState[currentIdx].ammo[weaponKey] ?? 0
+  function getAmmo(key) {
+    return playerState[currentPlayer].ammo[key] ?? 0
   }
 
-  // ── Tokens de evasión ────────────────────────────────────────────────────
+  // ── Tokens de evasión ─────────────────────────────────────────────────────
   function useEvasionToken() {
-    const state = playerState[currentIdx]
-    if (state.evasionTokens <= 0) return false
-    state.evasionTokens--
-    _notifyChange()
+    const st = playerState[currentPlayer]
+    if (st.evasionTokens <= 0) return false
+    st.evasionTokens--
+    _notify()
     return true
   }
 
-  /**
-   * Sacrifica un token de evasión para recargar 1 munición del arma indicada.
-   */
-  function reloadWithEvasionToken(weaponKey) {
-    const state = playerState[currentIdx]
-    if (state.evasionTokens <= 0) return false
-    if (state.ammo[weaponKey] === undefined) return false
-    const maxAmmo = AMMO_CONFIG[weaponKey]?.total ?? 0
-    if (state.ammo[weaponKey] >= maxAmmo) return false // ya está lleno
-    state.evasionTokens--
-    state.ammo[weaponKey]++
-    _notifyChange()
+  function reloadWithEvasionToken(key) {
+    const st = playerState[currentPlayer]
+    if (st.evasionTokens <= 0) return false
+    const max = AMMO_CONFIG[key]?.total ?? 0
+    if ((st.ammo[key] ?? 0) >= max) return false
+    st.evasionTokens--
+    st.ammo[key]++
+    _notify()
     return true
   }
 
-  // ── Fin de turno ─────────────────────────────────────────────────────────
-  /**
-   * Avanza al siguiente jugador y resetea recursos de turno.
-   * Los cargadores de munición NO se resetean (son por partida).
-   */
-  function nextTurn() {
-    currentIdx = (currentIdx + 1) % ships.length
-
-    // Al completar una ronda, incrementar turno
-    if (currentIdx === 0) turnNumber++
-
-    // Resetear solo los recursos que se renuevan por turno
-    playerState[currentIdx].movePool      = MOVE_POOL_PER_TURN
-    playerState[currentIdx].evasionTokens = EVASION_TOKENS_PER_TURN
-
-    _notifyChange()
-  }
-
-  /**
-   * Fin de turno manual (el jugador presiona "Terminar turno").
-   */
+  // ── Fin de turno ──────────────────────────────────────────────────────────
   function endTurn() {
-    nextTurn()
+    currentPlayer = currentPlayer === 0 ? 1 : 0
+    if (currentPlayer === 0) turnNumber++
+
+    // Resetear recursos de turno (munición no se resetea)
+    const st = playerState[currentPlayer]
+    st.movePool      = MOVE_POOL_PER_TURN
+    st.evasionTokens = EVASION_TOKENS_PER_TURN
+
+    _notify()
   }
 
-  // ── Compatibilidad con la API anterior de turns.js ───────────────────────
-  // scene.js usa turns.useAction('move') y turns.useAction('shoot')
-  // Mantenemos este wrapper para no romper scene.js en J11.
-  // Se eliminará en J12 cuando se migre scene.js.
-  function useAction(type) {
-    if (type === 'move')  return useMove(1)
-    if (type === 'shoot') return useAmmo('cannon_light') // arma por defecto
-    return false
-  }
-
+  // ── Helpers ───────────────────────────────────────────────────────────────
   function getActions() {
-    // Formato legacy que espera hud.js actual
-    const state = playerState[currentIdx]
+    const st = playerState[currentPlayer]
     return {
-      move:  state.movePool,
-      shoot: state.ammo['cannon_light'],
-      // Nuevo formato extendido:
-      movePool:      state.movePool,
-      evasionTokens: state.evasionTokens,
-      ammo:          { ...state.ammo },
+      move:          st.movePool,
+      shoot:         st.ammo['cannon_light'],
+      movePool:      st.movePool,
+      evasionTokens: st.evasionTokens,
+      ammo:          { ...st.ammo },
     }
   }
 
-  // ── Interno ──────────────────────────────────────────────────────────────
-  function _notifyChange() {
-    onTurnChange(currentIdx, getActions(), turnNumber)
+  function _notify() {
+    onTurnChange(currentPlayer, getActions(), turnNumber)
   }
 
   return {
-    // API principal
-    currentShip,
-    getState,
+    getCurrentPlayer,
+    getCurrentFleet,
+    currentShip,       // compatibilidad
     getTurnNumber,
     useMove,
     canMove,
@@ -172,9 +133,12 @@ export function createTurnSystem(ships, onTurnChange) {
     useEvasionToken,
     reloadWithEvasionToken,
     endTurn,
-    nextTurn,
-    // Compatibilidad legacy
-    useAction,
     getActions,
+    // legacy
+    useAction: (type) => {
+      if (type === 'move')  return useMove(1)
+      if (type === 'shoot') return useAmmo('cannon_light')
+      return false
+    },
   }
 }
