@@ -159,9 +159,99 @@ export function createRevealSystem(scene, enemyGrid) {
     return fullyRevealedShips.has(ship)
   }
 
+  // ── Mostrar/ocultar humo de ataque (sincronizar con visibilidad de grilla) ──
+  function showSmoke() {
+    smokeEffects.forEach(({ group }) => { group.visible = true })
+  }
+
+  function hideSmoke() {
+    smokeEffects.forEach(({ group }) => { group.visible = false })
+  }
+
+  // ── Humo de daño sobre secciones propias ──────────────────────────────────
+  // Diferente al humo de ataque: sigue al barco, visible en vista propia
+  const damageSmokeEffects = new Map()  // key: `shipId_sectionIdx`
+
+  function spawnDamageSmoke(ship, sectionIndex) {
+    const key = `${ship.uuid}_${sectionIndex}`
+    if (damageSmokeEffects.has(key)) return
+
+    const group     = new THREE.Group()
+    const particles = []
+
+    for (let i = 0; i < 4; i++) {
+      const geo = new THREE.SphereGeometry(0.08 + Math.random() * 0.07, 5, 5)
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x999999,
+        transparent: true,
+        opacity: 0.6 + Math.random() * 0.2,
+      })
+      const mesh = new THREE.Mesh(geo, mat)
+      mesh.position.set(
+        (Math.random() - 0.5) * 0.3,
+        0.2 + Math.random() * 0.2,
+        (Math.random() - 0.5) * 0.3
+      )
+      mesh.userData.speed = 0.4 + Math.random() * 0.5
+      mesh.userData.phase = Math.random() * Math.PI * 2
+      group.add(mesh)
+      particles.push(mesh)
+    }
+
+    scene.add(group)
+    damageSmokeEffects.set(key, { group, particles, ship, sectionIndex })
+  }
+
+  const _dsVec = new THREE.Vector3()
+
+  function updateDamageSmoke(totalTime) {
+    damageSmokeEffects.forEach(({ group, particles, ship, sectionIndex }) => {
+      // El humo sigue la visibilidad del barco directamente
+      // Si el barco es visible (mapa propio del defensor), el humo es visible
+      // Si el barco está oculto (mapa enemigo o mapa del atacante), el humo se oculta
+      const shouldShow = ship.parent && ship.visible
+      group.visible = shouldShow
+
+      if (!shouldShow) return
+
+      const sec = ship.userData.sections?.[sectionIndex]
+      if (sec) {
+        const HEX_SIZE = 1
+        const { dq, dr } = sec.cellOffset
+        const lx = HEX_SIZE * (3 / 2) * dq
+        const lz = HEX_SIZE * (Math.sqrt(3) * dr + (Math.sqrt(3) / 2) * dq)
+        ship.updateMatrixWorld(true)
+        _dsVec.set(lx, 0.4, lz)
+        _dsVec.applyMatrix4(ship.matrixWorld)
+        group.position.set(_dsVec.x, _dsVec.y, _dsVec.z)
+      }
+
+      particles.forEach(p => {
+        p.position.y = 0.2 + Math.abs(Math.sin(totalTime * p.userData.speed + p.userData.phase)) * 0.4
+        p.material.opacity = 0.3 + Math.abs(Math.sin(totalTime * 0.6 + p.userData.phase)) * 0.35
+      })
+    })
+  }
+
+  function showDamageSmoke() {
+    damageSmokeEffects.forEach(({ group, ship }) => {
+      group.visible = ship.parent && ship.visible
+    })
+  }
+
+  function hideDamageSmoke() {
+    damageSmokeEffects.forEach(({ group }) => { group.visible = false })
+  }
+
   return {
     registerHit,
     updateSmoke,
+    showSmoke,
+    hideSmoke,
+    spawnDamageSmoke,
+    updateDamageSmoke,
+    showDamageSmoke,
+    hideDamageSmoke,
     wasCellAttacked,
     isShipFullyRevealed,
     recordHitForDefender,
@@ -170,9 +260,10 @@ export function createRevealSystem(scene, enemyGrid) {
 }
 
 // Posición mundo desde q,r + offset de grilla
+// Fórmula flat-top igual que grid.js hexToWorld
 function worldPosFromQR(q, r, offset) {
   const HEX_SIZE = 1
-  const x = HEX_SIZE * Math.sqrt(3) * (q + r / 2) + offset.x
-  const z = HEX_SIZE * (3 / 2) * r + offset.z
+  const x = HEX_SIZE * (3 / 2) * q + (offset?.x ?? 0)
+  const z = HEX_SIZE * (Math.sqrt(3) * r + (Math.sqrt(3) / 2) * q) + (offset?.z ?? 0)
   return { x, z }
 }

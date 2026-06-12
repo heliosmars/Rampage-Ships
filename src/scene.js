@@ -1,4 +1,4 @@
-// scene.js — J13: flujo de acciones por barco, cámara viaja al mapa enemigo
+// scene.js — J14: dos grillas enemigas independientes, humo sincronizado con vistas
 import * as THREE from 'three'
 import { createShip, ShipType } from './ship.js'
 import { fireProjectile } from './projectile.js'
@@ -8,7 +8,7 @@ import { createTurnSystem } from './turns.js'
 import { createHUD } from './hud.js'
 import { resolveImpactByDistance } from './damage.js'
 import { createDeploymentPhase } from './deployment.js'
-import { createGrid, hexToWorld, worldToHex, getReachableCells, HEX_SIZE, GRID_RADIUS, TILE_COLOR } from './grid.js'
+import { createGrid, hexToWorld, getReachableCells, TILE_COLOR } from './grid.js'
 import { createRevealSystem } from './reveal.js'
 
 const DAMAGE_PER_SHOT = 3
@@ -22,7 +22,6 @@ export function initScene() {
   const scene = new THREE.Scene()
   scene.background = new THREE.Color(0x0a1628)
 
-  // ── Cámara ────────────────────────────────────────────────────────────────
   const aspect = window.innerWidth / window.innerHeight
   const zoom   = 14
   const camera = new THREE.OrthographicCamera(
@@ -44,61 +43,44 @@ export function initScene() {
   })
 
   // ── Animación de cámara ───────────────────────────────────────────────────
-  let camAnim = null  // { fromPos, toPos, fromLook, toLook, elapsed, duration, onDone }
+  let camAnim = null
   const _camFrom = new THREE.Vector3()
   const _camTo   = new THREE.Vector3()
 
   function animateCamera(toPos, toLook, duration = 0.6, onDone = null) {
+    const dir = new THREE.Vector3()
+    camera.getWorldDirection(dir)
     camAnim = {
       fromPos:  camera.position.clone(),
       toPos:    new THREE.Vector3(...toPos),
-      fromLook: getCameraLookAt(),
+      fromLook: camera.position.clone().add(dir.multiplyScalar(30)),
       toLook:   new THREE.Vector3(...toLook),
-      elapsed:  0,
-      duration,
-      onDone,
+      elapsed: 0, duration, onDone,
     }
-  }
-
-  function getCameraLookAt() {
-    // Reconstruir punto de lookAt desde la dirección actual
-    const dir = new THREE.Vector3()
-    camera.getWorldDirection(dir)
-    return camera.position.clone().add(dir.multiplyScalar(30))
   }
 
   function updateCameraAnim(dt) {
     if (!camAnim) return
     camAnim.elapsed += dt
     const t    = Math.min(camAnim.elapsed / camAnim.duration, 1)
-    const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t  // ease in-out
-
+    const ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t
     camera.position.lerpVectors(camAnim.fromPos, camAnim.toPos, ease)
     _camFrom.copy(camAnim.fromLook)
     _camTo.copy(camAnim.toLook)
     camera.lookAt(_camFrom.lerp(_camTo, ease))
-
-    if (t >= 1) {
-      const cb = camAnim.onDone
-      camAnim = null
-      if (cb) cb()
-    }
+    if (t >= 1) { const cb = camAnim.onDone; camAnim = null; if (cb) cb() }
   }
 
-  // ── Estado global ─────────────────────────────────────────────────────────
-  const clock    = new THREE.Clock()
-  let totalTime  = 0
-  let allShips   = []
-  let gameLoop   = null
+  const clock   = new THREE.Clock()
+  let totalTime = 0
+  let allShips  = []
+  let gameLoop  = null
 
-  // ── Loop principal ────────────────────────────────────────────────────────
   function animate() {
     requestAnimationFrame(animate)
     const dt = clock.getDelta()
     totalTime += dt
-
     updateCameraAnim(dt)
-
     allShips.forEach((ship, i) => {
       if (!ship.parent) return
       ship.userData.updateMovement(dt)
@@ -108,7 +90,6 @@ export function initScene() {
       ship.rotation.x = Math.sin(totalTime * 1.2 + phase) * 0.015
       ship.userData.updateBars()
     })
-
     if (gameLoop) gameLoop(dt)
     renderer.render(scene, camera)
   }
@@ -116,7 +97,6 @@ export function initScene() {
 
   // ── Despliegue ────────────────────────────────────────────────────────────
   const deployGrid = createGrid(scene, { x: 0, z: 0 }, false)
-
   const deployment = createDeploymentPhase(
     scene, deployGrid.tileMap, camera, renderer,
     (fleet1, fleet2) => {
@@ -130,36 +110,39 @@ export function initScene() {
   function startBattle(fleet1, fleet2) {
     allShips = [...fleet1, ...fleet2]
 
-    // Dos grillas en la misma posición — solo una visible a la vez
-    const ownGrid   = createGrid(scene, { x: 0, z: 0 }, false)
-    const enemyGrid = createGrid(scene, { x: 0, z: 0 }, true)
-    enemyGrid.tiles.forEach(t => { t.visible = false })
+    const ownGrid = createGrid(scene, { x: 0, z: 0 }, false)
 
-    // Ocultar barcos enemigos al inicio
+    // Dos grillas enemigas independientes — una por jugador atacante
+    const enemyGridP0 = createGrid(scene, { x: 0, z: 0 }, true)  // J1 ve esto al atacar
+    const enemyGridP1 = createGrid(scene, { x: 0, z: 0 }, true)  // J2 ve esto al atacar
+
+    enemyGridP0.tiles.forEach(t => { t.visible = false })
+    enemyGridP1.tiles.forEach(t => { t.visible = false })
+
     fleet2.forEach(s => {
       s.visible = false
       ;(s.userData._hpBars ?? []).forEach(b => { if (b.group) b.group.visible = false })
     })
 
-    // Reposicionar barcos sobre la grilla (offset 0,0)
     allShips.forEach(s => {
       const { x, z } = hexToWorld(s.userData.q, s.userData.r)
       s.position.x = x; s.position.z = z
     })
 
-    const trajectory    = createTrajectory(scene)
-    const hud           = createHUD()
-    const projectiles   = []
-    const explosions    = []
+    const trajectory  = createTrajectory(scene)
+    const hud         = createHUD()
+    const projectiles = []
+    const explosions  = []
 
-    // Sistema de revelación por jugador
-    const revealP0 = createRevealSystem(scene, enemyGrid)  // J1 atacando a J2
-    const revealP1 = createRevealSystem(scene, enemyGrid)  // J2 atacando a J1
+    // revealP0 marca en enemyGridP0 (historial de ataques de J1)
+    // revealP1 marca en enemyGridP1 (historial de ataques de J2)
+    const revealP0 = createRevealSystem(scene, enemyGridP0)
+    const revealP1 = createRevealSystem(scene, enemyGridP1)
 
-    function getReveal(player) { return player === 0 ? revealP0 : revealP1 }
+    function getReveal(player)    { return player === 0 ? revealP0 : revealP1 }
+    function getEnemyGrid(player) { return player === 0 ? enemyGridP0 : enemyGridP1 }
 
     // ── Acciones por barco ────────────────────────────────────────────────
-    // Cada barco tiene { attacked: bool, moved: bool } por turno
     let shipActions = new Map()
 
     function resetShipActions() {
@@ -168,12 +151,15 @@ export function initScene() {
     }
     resetShipActions()
 
-    function canAttack(ship) { return !(shipActions.get(ship)?.attacked) }
-    function canMove(ship)   { return !(shipActions.get(ship)?.moved) && !(shipActions.get(ship)?.attacked) }
+    function canAttack(ship) { return !shipActions.get(ship)?.attacked }
+    function canMove(ship) {
+      const a = shipActions.get(ship)
+      return !a?.moved && !a?.attacked
+    }
     function markAttacked(ship) { if (shipActions.has(ship)) shipActions.get(ship).attacked = true }
-    function markMoved(ship)    { if (shipActions.has(ship)) shipActions.get(ship).moved = true }
+    function markMoved(ship)    { if (shipActions.has(ship)) shipActions.get(ship).moved    = true }
 
-    // ── Sistema de turnos ─────────────────────────────────────────────────
+    // ── Turnos ────────────────────────────────────────────────────────────
     const turns = createTurnSystem(fleet1, fleet2, (playerIdx, actions, turn) => {
       hud.update(playerIdx, actions, turn)
       resetShipActions()
@@ -181,9 +167,10 @@ export function initScene() {
     })
     hud.update(0, turns.getActions(), 1)
 
-    // ── Barco seleccionado y modo activo ──────────────────────────────────
-    let selectedShip = null   // barco seleccionado en vista propia
-    let activeMode   = null   // 'move' | 'attack' | null
+    let selectedShip  = null
+    let activeMode    = null
+    let currentView   = 'own'   // 'own' | 'enemy'
+    let viewingPlayer = 0       // qué jugador está viendo su mapa
 
     function deselectShip() {
       if (selectedShip) {
@@ -199,9 +186,18 @@ export function initScene() {
 
     // ── Vista propia ──────────────────────────────────────────────────────
     function showOwnView(playerIdx) {
+      currentView   = 'own'
+      viewingPlayer = playerIdx
       ownGrid.tiles.forEach(t => { t.visible = true })
-      enemyGrid.tiles.forEach(t => { t.visible = false })
-      enemyGrid.setHover(null, null)
+      enemyGridP0.tiles.forEach(t => { t.visible = false })
+      enemyGridP1.tiles.forEach(t => { t.visible = false })
+      enemyGridP0.setHover(null, null)
+      enemyGridP1.setHover(null, null)
+
+      // Ocultar humo de ataque — no debe verse en el mapa propio
+      revealP0.hideSmoke()
+      revealP1.hideSmoke()
+      // La visibilidad del humo de daño se recalcula cada frame en el gameLoop
 
       const myFleet    = playerIdx === 0 ? fleet1 : fleet2
       const enemyFleet = playerIdx === 0 ? fleet2 : fleet1
@@ -217,116 +213,105 @@ export function initScene() {
         ;(s.userData._hpBars ?? []).forEach(b => { if (b.group) b.group.visible = show })
       })
 
-      // Cámara vuelve al mapa propio
       animateCamera([0, 30, 6], [0, 0, 0])
       deselectShip()
     }
 
-    // ── Vista enemiga (para atacar) ───────────────────────────────────────
-    function showEnemyView(playerIdx, onReady) {
+    // ── Vista enemiga ─────────────────────────────────────────────────────
+    function showEnemyView(playerIdx) {
+      currentView   = 'enemy'
+      viewingPlayer = playerIdx
       ownGrid.tiles.forEach(t => { t.visible = false })
-      enemyGrid.tiles.forEach(t => { t.visible = true })
+
+      const myEnemyGrid    = getEnemyGrid(playerIdx)
+      const otherEnemyGrid = playerIdx === 0 ? enemyGridP1 : enemyGridP0
+      myEnemyGrid.tiles.forEach(t => { t.visible = true })
+      otherEnemyGrid.tiles.forEach(t => { t.visible = false })
+
+      // Mostrar solo el humo de ataque del jugador activo
+      getReveal(playerIdx).showSmoke()
+      getReveal(playerIdx === 0 ? 1 : 0).hideSmoke()
+      // La visibilidad del humo de daño se recalcula cada frame en el gameLoop
 
       const myFleet    = playerIdx === 0 ? fleet1 : fleet2
       const enemyFleet = playerIdx === 0 ? fleet2 : fleet1
       const rev        = getReveal(playerIdx)
 
       myFleet.forEach(s => { s.visible = false })
-      enemyFleet.forEach(s => {
-        const show = rev.isShipFullyRevealed(s)
-        s.visible  = show
-      })
+      enemyFleet.forEach(s => { s.visible = rev.isShipFullyRevealed(s) })
 
-      // Cámara viaja al mapa enemigo (misma posición, efecto de zoom/tilt)
-      animateCamera([0, 25, 4], [0, 0, 0], 0.5, onReady)
+      animateCamera([0, 25, 4], [0, 0, 0], 0.5)
     }
 
     // ── Botones de acción ─────────────────────────────────────────────────
     const actionUI = document.createElement('div')
     actionUI.style.cssText = `
-      position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
-      display: none; gap: 12px; z-index: 20;
+      position:fixed; bottom:90px; left:50%; transform:translateX(-50%);
+      display:none; gap:12px; z-index:20;
     `
     document.body.appendChild(actionUI)
 
-    const btnAttack = makeActionBtn('⚔️ Atacar',  '#8b0000')
-    const btnMove   = makeActionBtn('🚢 Mover',   '#1a6fa8')
-    actionUI.appendChild(btnAttack)
-    actionUI.appendChild(btnMove)
-
-    function makeActionBtn(label, bg) {
+    function makeBtn(label, bg) {
       const btn = document.createElement('button')
       btn.textContent = label
       btn.style.cssText = `
-        background: ${bg}; color: white; border: none; border-radius: 10px;
-        padding: 10px 20px; font-family: monospace; font-size: 14px;
-        cursor: pointer; opacity: 0.9;
+        background:${bg}; color:white; border:none; border-radius:10px;
+        padding:10px 20px; font-family:monospace; font-size:14px; cursor:pointer;
       `
       return btn
     }
 
+    const btnAttack = makeBtn('⚔️ Atacar', '#8b0000')
+    const btnMove   = makeBtn('🚢 Mover',  '#1a6fa8')
+    actionUI.appendChild(btnAttack)
+    actionUI.appendChild(btnMove)
+
     function showActionButtons(ship) {
-      const p = turns.getCurrentPlayer()
       actionUI.style.display = 'flex'
-      btnAttack.style.opacity = canAttack(ship) ? '1' : '0.3'
+      btnAttack.style.opacity       = canAttack(ship) ? '1'    : '0.3'
       btnAttack.style.pointerEvents = canAttack(ship) ? 'auto' : 'none'
-      btnMove.style.opacity   = canMove(ship)   ? '1' : '0.3'
-      btnMove.style.pointerEvents = canMove(ship)   ? 'auto' : 'none'
+      btnMove.style.opacity         = canMove(ship)   ? '1'    : '0.3'
+      btnMove.style.pointerEvents   = canMove(ship)   ? 'auto' : 'none'
     }
+    function hideActionButtons() { actionUI.style.display = 'none' }
 
-    function hideActionButtons() {
-      actionUI.style.display = 'none'
-    }
-
-    // Botón atacar: viaja al mapa enemigo
     btnAttack.addEventListener('click', (e) => {
-      e.stopPropagation()   // evitar que el click llegue al canvas
+      e.stopPropagation()
       if (!selectedShip || !canAttack(selectedShip)) return
       activeMode = 'attack'
       hideActionButtons()
-      const p = turns.getCurrentPlayer()
-      showEnemyView(p, null)
+      showEnemyView(turns.getCurrentPlayer())
     })
 
-    // Botón mover: muestra celdas disponibles
     btnMove.addEventListener('click', (e) => {
-      e.stopPropagation()   // evitar que el click llegue al canvas
+      e.stopPropagation()
       if (!selectedShip || !canMove(selectedShip)) return
       activeMode = 'move'
       hideActionButtons()
       const caps  = selectedShip.userData.getCapabilities()
       const steps = caps.canMove ? Math.min(selectedShip.userData.speedBase ?? 2, caps.speedMax) : 0
       if (steps > 0) {
-        const cells = getReachableCells(
-          selectedShip.userData.q, selectedShip.userData.r, steps, ownGrid.tileMap
+        ownGrid.setMoveHighlights(
+          getReachableCells(selectedShip.userData.q, selectedShip.userData.r, steps, ownGrid.tileMap)
         )
-        ownGrid.setMoveHighlights(cells)
       }
     })
 
-    // Botón fin de turno
     const btnEndTurn = document.createElement('button')
     btnEndTurn.textContent = 'Terminar turno →'
     btnEndTurn.style.cssText = `
-      position: fixed; bottom: 24px; right: 24px;
-      background: rgba(0,0,0,0.8); color: white;
-      border: 1px solid rgba(255,255,255,0.3); border-radius: 12px;
-      padding: 10px 18px; font-family: monospace; font-size: 13px;
-      cursor: pointer; z-index: 10;
+      position:fixed; bottom:24px; right:24px;
+      background:rgba(0,0,0,0.8); color:white;
+      border:1px solid rgba(255,255,255,0.3); border-radius:12px;
+      padding:10px 18px; font-family:monospace; font-size:13px;
+      cursor:pointer; z-index:10;
     `
-    btnEndTurn.addEventListener('click', (e) => { e.stopPropagation(); endCurrentTurn() })
+    btnEndTurn.addEventListener('click', (e) => { e.stopPropagation(); turns.endTurn() })
     document.body.appendChild(btnEndTurn)
-
-    function endCurrentTurn() {
-      deselectShip()
-      showOwnView(turns.getCurrentPlayer() === 0 ? 1 : 0)
-      turns.endTurn()
-    }
 
     // ── Raycaster ─────────────────────────────────────────────────────────
     const raycaster = new THREE.Raycaster()
     const mouse     = new THREE.Vector2()
-
     function getNDC(e) {
       mouse.x =  (e.clientX / window.innerWidth)  * 2 - 1
       mouse.y = -(e.clientY / window.innerHeight) * 2 + 1
@@ -337,16 +322,17 @@ export function initScene() {
       getNDC(e)
       raycaster.setFromCamera(mouse, camera)
 
-      // ── Vista enemiga: disparar ──────────────────────────────────────
+      // Vista enemiga: disparar
       if (activeMode === 'attack') {
+        const player      = turns.getCurrentPlayer()
+        const myEnemyGrid = getEnemyGrid(player)
         const hits = raycaster.intersectObjects(
-          enemyGrid.tiles.filter(t => t.visible).map(t => t.children[0]), true
+          myEnemyGrid.tiles.filter(t => t.visible).map(t => t.children[0]), true
         )
         if (!hits.length) return
 
         const { q, r } = hits[0].object.parent.userData
         const { x, z } = hexToWorld(q, r)
-        const player    = turns.getCurrentPlayer()
         const enemies   = player === 0 ? fleet2 : fleet1
         const rev       = getReveal(player)
 
@@ -356,6 +342,11 @@ export function initScene() {
         const updater = fireProjectile(scene, from, to, pos => {
           const hitResult = resolveImpactByDistance(pos, enemies, DAMAGE_PER_SHOT)
           rev.registerHit(q, r, hitResult?.hit ? hitResult : null)
+          // Spawn humo de daño sobre la sección golpeada (visible en vista propia del defensor)
+          if (hitResult?.hit) {
+            const defenderRev = getReveal(player === 0 ? 1 : 0)
+            defenderRev.spawnDamageSmoke(hitResult.ship, hitResult.sectionIndex)
+          }
           explosions.push(createExplosion(scene, pos))
         })
 
@@ -364,39 +355,32 @@ export function initScene() {
         markAttacked(selectedShip)
         activeMode = null
 
-        // Volver al mapa propio tras un breve delay
         setTimeout(() => showOwnView(player), 1200)
         return
       }
 
-      // ── Vista propia: seleccionar barco o mover ──────────────────────
+      // Vista propia: mover
       if (activeMode === 'move') {
-        // Click en celda de movimiento — usar tileMap para validar
         const hits = raycaster.intersectObjects(
           ownGrid.tiles.filter(t => t.visible).map(t => t.children[0]), true
         )
         if (hits.length > 0) {
           const { q, r } = hits[0].object.parent.userData
-          // Verificar que la celda está en el set de celdas resaltadas
           if (ownGrid.isHighlighted(q, r)) {
-            const dist = Math.max(
-              Math.abs(q - selectedShip.userData.q),
-              Math.abs(r - selectedShip.userData.r),
-              Math.abs((q+r) - (selectedShip.userData.q + selectedShip.userData.r))
-            )
-            if (turns.useMove(dist)) {
-              markMoved(selectedShip)
-              selectedShip.userData.q = q
-              selectedShip.userData.r = r
-              selectedShip.userData.moveTo(q, r)
-              deselectShip()
-            }
+            // Ejecutar movimiento directamente sin depender del pool de turns
+            // (el pool existe para el HUD, no como gate del movimiento)
+            const ship = selectedShip  // capturar antes de deselectShip
+            markMoved(ship)
+            ship.userData.q = q
+            ship.userData.r = r
+            deselectShip()            // limpiar UI primero
+            ship.userData.moveTo(q, r) // luego animar
           }
         }
         return
       }
 
-      // Sin modo activo: seleccionar barco de la flota activa
+      // Sin modo: seleccionar barco de la flota activa
       const activeFleet = turns.getCurrentFleet()
       let clickedShip   = null
       for (const ship of activeFleet) {
@@ -422,24 +406,25 @@ export function initScene() {
       }
     }
 
-    // ── Hover sobre grilla enemiga ─────────────────────────────────────
+    // ── Hover sobre grilla enemiga activa ──────────────────────────────
     function onMouseMove(e) {
       if (activeMode !== 'attack') return
       getNDC(e)
       raycaster.setFromCamera(mouse, camera)
+      const myEnemyGrid = getEnemyGrid(turns.getCurrentPlayer())
       const hits = raycaster.intersectObjects(
-        enemyGrid.tiles.filter(t => t.visible).map(t => t.children[0]), true
+        myEnemyGrid.tiles.filter(t => t.visible).map(t => t.children[0]), true
       )
       if (hits.length > 0) {
         const { q, r } = hits[0].object.parent.userData
-        enemyGrid.setHover(q, r)
+        myEnemyGrid.setHover(q, r)
       } else {
-        enemyGrid.setHover(null, null)
+        myEnemyGrid.setHover(null, null)
       }
     }
 
     function onKeyDown(e) {
-      if (e.key === 'Enter') endCurrentTurn()
+      if (e.key === 'Enter') turns.endTurn()
       if (e.key === 'Escape') {
         if (activeMode === 'attack') showOwnView(turns.getCurrentPlayer())
         else deselectShip()
@@ -452,9 +437,24 @@ export function initScene() {
 
     gameLoop = (dt) => {
       ownGrid.updateWaves(totalTime)
-      enemyGrid.updateWaves(totalTime)
+      enemyGridP0.updateWaves(totalTime)
+      enemyGridP1.updateWaves(totalTime)
       revealP0.updateSmoke(totalTime)
       revealP1.updateSmoke(totalTime)
+      revealP0.updateDamageSmoke(totalTime)
+      revealP1.updateDamageSmoke(totalTime)
+      // Visibilidad dinámica del humo de daño según vista activa
+      // En vista propia: mostrar humo del oponente (daño que sufriste)
+      // En vista enemiga: ocultar todo humo de daño
+      if (currentView === 'own') {
+        const myDmgSmoke  = viewingPlayer === 0 ? revealP0 : revealP1
+        const oppDmgSmoke = viewingPlayer === 0 ? revealP1 : revealP0
+        oppDmgSmoke.showDamageSmoke()   // humo de daño en barcos propios
+        myDmgSmoke.hideDamageSmoke()    // ocultar humo causado al enemigo
+      } else {
+        revealP0.hideDamageSmoke()
+        revealP1.hideDamageSmoke()
+      }
       for (let i = projectiles.length - 1; i >= 0; i--) {
         if (!projectiles[i](dt)) projectiles.splice(i, 1)
       }
@@ -463,7 +463,6 @@ export function initScene() {
       }
     }
 
-    // Iniciar en vista propia del J1
     showOwnView(0)
   }
 }
